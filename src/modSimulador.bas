@@ -3,9 +3,11 @@
 '  Arquitectura de Computadoras SIS131 - UCB Santa Cruz - Parcial 1
 '
 '  Mapa de la hoja "Simulador":
-'     A1:D7    Registros (PC, IR, MAR, MDR, AX, BX) y banderas (ZF, CF, SF)
+'     A1:D7    Registros PC, IR, MAR, MDR, AX, BX (A2:B7), banderas ZF, CF, SF
+'              (C2:D4) y registros CX, DX (C5:D6)
 '     A9:D15   Panel de control (botones)
 '     A17:D24  Unidad de control: fase, micro-operacion, ALU, reloj
+'     A25:D25  Selector del programa demostrativo
 '     A26:D30  Inspector de memoria (hex / binario / decimal / mnemonico)
 '     F2:V18   RAM 256 x 8 bits  (datos en G3:V18)
 '              filas 3-10 = segmento de CODIGO 00h-7Fh
@@ -29,7 +31,7 @@ Private Const EST_COL As Long = 31        ' columna AE (valores de estado)
 
 ' ---- Registros de la CPU (se cargan desde la hoja en cada accion) -----------
 Private PC As Long, IR As Long, IROP As Long, MAR As Long, MDR As Long
-Private AX As Long, BX As Long, TMP As Long
+Private AX As Long, BX As Long, CX As Long, DX As Long, TMP As Long
 Private ZF As Long, CF As Long, SF As Long
 
 ' ---- Estado de la unidad de control -----------------------------------------
@@ -59,8 +61,8 @@ Private Type TInstr
     Valida As Boolean
     Clase As String    ' NOP MOV LOAD STORE ALU UNARIA SALTO HLT
     Mnem As String
-    Op1 As String      ' AX, BX, [DIR], DIR
-    Op2 As String      ' AX, BX, IMM, [DIR]
+    Op1 As String      ' AX, BX, CX, DX, [DIR], [BX], DIR
+    Op2 As String      ' AX, BX, CX, DX, IMM, [DIR], [BX]
     Tam As Long        ' 1 o 2 bytes
 End Type
 
@@ -136,48 +138,66 @@ End Sub
 
 '==============================================================================
 '  3. DECODIFICADOR (ISA)
-'     00 NOP | 10-13 MOV | 14-15 LOAD reg,[dir] | 16-17 STORE [dir],reg
-'     20-23 ADD | 24-27 SUB | 28-2B CMP | 2C-2F AND | 30-33 OR | 34-37 XOR
-'     38-39 INC | 3A-3B DEC | 3C-3D NOT
-'     40 JMP | 41 JZ | 42 JNZ | 43 JC | 44 JNC | FF HLT
-'     Bits 1..0 en MOV y ALU: 00=AX,imm  01=BX,imm  10=AX,BX  11=BX,AX
+'     Codigo de registro (2 bits): 00 = AX, 01 = BX, 10 = CX, 11 = DX
+'
+'     00h        NOP
+'     1dsh-7dsh  Operacion registro-registro. Nibble alto = operacion,
+'                nibble bajo = dd ss (bits 3-2 destino, bits 1-0 fuente)
+'                1 MOV  2 ADD  3 SUB  4 CMP  5 AND  6 OR  7 XOR
+'                Ej.: 21h = 0010 0001 = ADD AX, BX ;  2Ah = ADD CX, CX
+'     80h-9Bh    Operacion registro-inmediato: (op - 80h) \ 4 = operacion
+'                (0 MOV 1 ADD 2 SUB 3 CMP 4 AND 5 OR 6 XOR), bits 1-0 = registro
+'                Ej.: 80h = MOV AX, imm8 ; 8Ah = ADD CX, imm8
+'     A0h-A3h LOAD reg,[dir8]   A4h-A7h STORE [dir8],reg
+'     A8h-ABh LOAD reg,[BX]     ACh-AFh STORE [BX],reg   (indirecto)
+'     B0h-B3h INC reg   B4h-B7h DEC reg   B8h-BBh NOT reg
+'     C0h JMP  C1h JZ  C2h JNZ  C3h JC  C4h JNC  C5h JS  C6h JNS
+'     FFh        HLT
 '==============================================================================
-Private Function RegBit(ByVal b As Long) As String
-    If b = 0 Then RegBit = "AX" Else RegBit = "BX"
+Private Function RegCod(ByVal c As Long) As String
+    RegCod = Choose((c And 3) + 1, "AX", "BX", "CX", "DX")
 End Function
 
-Private Sub Variante(ByRef d As TInstr, ByVal v As Long)
-    Select Case v
-        Case 0: d.Op1 = "AX": d.Op2 = "IMM"
-        Case 1: d.Op1 = "BX": d.Op2 = "IMM"
-        Case 2: d.Op1 = "AX": d.Op2 = "BX"
-        Case 3: d.Op1 = "BX": d.Op2 = "AX"
-    End Select
-End Sub
+Private Function OpNombre(ByVal n As Long) As String
+    OpNombre = Choose(n + 1, "MOV", "ADD", "SUB", "CMP", "AND", "OR", "XOR")
+End Function
 
 Private Function Decodificar(ByVal op As Long) As TInstr
     Dim d As TInstr
     d.Valida = True
     Select Case op
-        Case &H0: d.Clase = "NOP": d.Mnem = "NOP"
-        Case &H10 To &H13: d.Clase = "MOV": d.Mnem = "MOV": Variante d, op And 3
-        Case &H14, &H15: d.Clase = "LOAD": d.Mnem = "LOAD": d.Op1 = RegBit(op And 1): d.Op2 = "[DIR]"
-        Case &H16, &H17: d.Clase = "STORE": d.Mnem = "STORE": d.Op1 = "[DIR]": d.Op2 = RegBit(op And 1)
-        Case &H20 To &H37
-            d.Clase = "ALU"
-            d.Mnem = Choose((op - &H20) \ 4 + 1, "ADD", "SUB", "CMP", "AND", "OR", "XOR")
-            Variante d, op And 3
-        Case &H38 To &H3D
+        Case &H0
+            d.Clase = "NOP": d.Mnem = "NOP"
+        Case &H10 To &H7F
+            ' registro-registro: nibble alto = operacion, nibble bajo = dd ss
+            d.Mnem = OpNombre((op \ 16) - 1)
+            d.Op1 = RegCod((op \ 4) And 3)
+            d.Op2 = RegCod(op And 3)
+        Case &H80 To &H9B
+            ' registro-inmediato
+            d.Mnem = OpNombre((op - &H80) \ 4)
+            d.Op1 = RegCod(op And 3)
+            d.Op2 = "IMM"
+        Case &HA0 To &HA3: d.Clase = "LOAD": d.Mnem = "LOAD": d.Op1 = RegCod(op): d.Op2 = "[DIR]"
+        Case &HA4 To &HA7: d.Clase = "STORE": d.Mnem = "STORE": d.Op1 = "[DIR]": d.Op2 = RegCod(op)
+        Case &HA8 To &HAB: d.Clase = "LOAD": d.Mnem = "LOAD": d.Op1 = RegCod(op): d.Op2 = "[BX]"
+        Case &HAC To &HAF: d.Clase = "STORE": d.Mnem = "STORE": d.Op1 = "[BX]": d.Op2 = RegCod(op)
+        Case &HB0 To &HBB
             d.Clase = "UNARIA"
-            d.Mnem = Choose((op - &H38) \ 2 + 1, "INC", "DEC", "NOT")
-            d.Op1 = RegBit(op And 1)
-        Case &H40 To &H44
+            d.Mnem = Choose((op - &HB0) \ 4 + 1, "INC", "DEC", "NOT")
+            d.Op1 = RegCod(op)
+        Case &HC0 To &HC6
             d.Clase = "SALTO"
-            d.Mnem = Choose(op - &H40 + 1, "JMP", "JZ", "JNZ", "JC", "JNC")
+            d.Mnem = Choose(op - &HC0 + 1, "JMP", "JZ", "JNZ", "JC", "JNC", "JS", "JNS")
             d.Op1 = "DIR"
-        Case &HFF: d.Clase = "HLT": d.Mnem = "HLT"
-        Case Else: d.Valida = False: d.Clase = "INVALIDA": d.Mnem = "???"
+        Case &HFF
+            d.Clase = "HLT": d.Mnem = "HLT"
+        Case Else
+            d.Valida = False: d.Clase = "INVALIDA": d.Mnem = "???"
     End Select
+    If d.Clase = "" Then
+        If d.Mnem = "MOV" Then d.Clase = "MOV" Else d.Clase = "ALU"
+    End If
     If d.Op1 = "DIR" Or d.Op1 = "[DIR]" Or d.Op2 = "IMM" Or d.Op2 = "[DIR]" Then d.Tam = 2 Else d.Tam = 1
     Decodificar = d
 End Function
@@ -208,6 +228,8 @@ End Function
 Private Function ModoDir(ByRef d As TInstr) As String
     If d.Op1 = "[DIR]" Or d.Op2 = "[DIR]" Then
         ModoDir = "directo"
+    ElseIf d.Op1 = "[BX]" Or d.Op2 = "[BX]" Then
+        ModoDir = "indirecto por registro"
     ElseIf d.Op2 = "IMM" Then
         ModoDir = "inmediato"
     ElseIf d.Op1 = "DIR" Then
@@ -258,11 +280,21 @@ Private Function ALU(ByVal op As String, ByVal a As Long, ByVal b As Long) As Lo
 End Function
 
 Private Function LeerReg(ByVal n As String) As Long
-    If n = "AX" Then LeerReg = AX Else LeerReg = BX
+    Select Case n
+        Case "AX": LeerReg = AX
+        Case "BX": LeerReg = BX
+        Case "CX": LeerReg = CX
+        Case "DX": LeerReg = DX
+    End Select
 End Function
 
 Private Sub EscribirReg(ByVal n As String, ByVal v As Long)
-    If n = "AX" Then AX = B8(v) Else BX = B8(v)
+    Select Case n
+        Case "AX": AX = B8(v)
+        Case "BX": BX = B8(v)
+        Case "CX": CX = B8(v)
+        Case "DX": DX = B8(v)
+    End Select
 End Sub
 
 Private Function Banderas() As String
@@ -395,15 +427,23 @@ Private Sub UExecute(ByRef d As TInstr)
             Detalle = "TMP=" & HX(TMP)
         Case "LOAD"
             If Micro = 0 Then
-                UMar "IR(op)", IROP
-                Activar "IR"
+                If d.Op2 = "[BX]" Then
+                    UMar "BX", BX                 ' direccionamiento indirecto
+                Else
+                    UMar "IR(op)", IROP
+                    Activar "IR"
+                End If
             Else
                 ULeer
             End If
         Case "STORE"
             If Micro = 0 Then
-                UMar "IR(op)", IROP
-                Activar "IR"
+                If d.Op1 = "[BX]" Then
+                    UMar "BX", BX                 ' direccionamiento indirecto
+                Else
+                    UMar "IR(op)", IROP
+                    Activar "IR"
+                End If
             Else
                 MDR = LeerReg(d.Op2)
                 Activar d.Op2 & ",MDR"
@@ -516,6 +556,8 @@ Private Function CargarEstado() As Boolean
     MDR = LeerHex(ws.Range("B5").value, ok)
     AX = LeerHex(ws.Range("B6").value, ok)
     BX = LeerHex(ws.Range("B7").value, ok)
+    CX = LeerHex(ws.Range("D5").value, ok)
+    DX = LeerHex(ws.Range("D6").value, ok)
     ZF = Val(ws.Range("D2").value): CF = Val(ws.Range("D3").value): SF = Val(ws.Range("D4").value)
     Fase = CStr(ws.Cells(1, EST_COL).value): If Fase = "" Then Fase = "FETCH"
     Micro = Val(ws.Cells(2, EST_COL).value)
@@ -537,6 +579,8 @@ Private Sub GuardarEstado()
     ws.Range("B5").value = H2(MDR)
     ws.Range("B6").value = H2(AX)
     ws.Range("B7").value = H2(BX)
+    ws.Range("D5").value = H2(CX)
+    ws.Range("D6").value = H2(DX)
     ws.Range("D2").value = ZF: ws.Range("D3").value = CF: ws.Range("D4").value = SF
     ws.Cells(1, EST_COL).value = Fase
     ws.Cells(2, EST_COL).value = Micro
@@ -572,6 +616,14 @@ Private Sub Pintar()
     Else
         ws.Range("C2:D4").Interior.Color = RGB(255, 242, 204)
     End If
+    nombres = Array("CX", "DX")
+    For i = 0 To 1
+        If Activo(CStr(nombres(i))) Then
+            ws.Range("C" & (i + 5) & ":D" & (i + 5)).Interior.Color = RGB(255, 217, 102)
+        Else
+            ws.Range("C" & (i + 5) & ":D" & (i + 5)).Interior.Color = RGB(242, 246, 252)
+        End If
+    Next i
 
     ' RAM: colores de segmento + instruccion actual + celda accedida
     ws.Range(ws.Cells(3, RAM_COL), ws.Cells(10, RAM_COL + 15)).Interior.Color = RGB(221, 235, 247)
@@ -748,7 +800,7 @@ Public Sub BtnReset()
     Dim ws As Worksheet
     If Ejecutando Then Pausa = True: Exit Sub
     If Not CargarEstado() Then Exit Sub
-    PC = 0: IR = 0: IROP = -1: MAR = 0: MDR = 0: AX = 0: BX = 0: TMP = 0
+    PC = 0: IR = 0: IROP = -1: MAR = 0: MDR = 0: AX = 0: BX = 0: CX = 0: DX = 0: TMP = 0
     ZF = 0: CF = 0: SF = 0
     Fase = "FETCH": Micro = 0: FaseUlt = "": Ciclo = 0: Paso = 0: Halt = False: Salto = False: PCInstr = 0
     Activos = "|": MemAct = -1
@@ -762,43 +814,119 @@ Public Sub BtnReset()
 End Sub
 
 Public Sub BtnLoadProgram()
-    ' LOAD PROGRAM: carga el programa demostrativo en la RAM
-    '-----------------------------------------------------------------
-    ' Multiplicacion por sumas sucesivas: RES = A x B  (7 x 3 = 21 = 15h)
-    '   Dir  Bytes   Instruccion          Comentario
-    '   00   10 00   MOV AX, 0
-    '   02   16 83   STORE [83h], AX      RES = 0
-    '   04   15 81   LOAD BX, [81h]       BX = B
-    '   06   17 82   STORE [82h], BX      CONT = B
-    '   08   29 00   CMP BX, 0
-    '   0A   41 1A   JZ 1Ah               si B = 0 terminar
-    '   0C   14 83   LOAD AX, [83h]       BUCLE: AX = RES
-    '   0E   15 80   LOAD BX, [80h]       BX = A
-    '   10   22      ADD AX, BX           AX = RES + A
-    '   11   16 83   STORE [83h], AX      RES = AX
-    '   13   15 82   LOAD BX, [82h]
-    '   15   3B      DEC BX               CONT - 1 (actualiza ZF)
-    '   16   17 82   STORE [82h], BX
-    '   18   42 0C   JNZ 0Ch              repetir si CONT <> 0
-    '   1A   FF      HLT
-    '   Datos: 80h A=07  81h B=03  82h CONT  83h RES
-    '-----------------------------------------------------------------
-    Dim prog As Variant, i As Long
+    ' LOAD PROGRAM: carga en la RAM el programa elegido en B25
+    Dim nombre As String, i As Long
     If Ejecutando Then Exit Sub
-    prog = Array(&H10, &H0, &H16, &H83, &H15, &H81, &H17, &H82, &H29, &H0, &H41, &H1A, _
-                 &H14, &H83, &H15, &H80, &H22, &H16, &H83, &H15, &H82, &H3B, &H17, &H82, _
-                 &H42, &HC, &HFF)
     For i = 0 To 255
         RAM(i) = 0
     Next i
-    For i = 0 To UBound(prog)
-        RAM(i) = prog(i)
-    Next i
-    RAM(&H80) = 7
-    RAM(&H81) = 3
+    nombre = Trim$(CStr(Sh.Range("B25").value))
+    Select Case LCase$(Left$(nombre, 4))
+        Case "fibo": ProgFibonacci
+        Case "fact": ProgFactorial
+        Case "cuen": ProgCuentaRegresiva
+        Case Else: nombre = "Multiplicacion": ProgMultiplicacion
+    End Select
     EscribirRAMCompleta
     BtnReset
-    LogSistema "Programa cargado: multiplicacion 7 x 3 (codigo 00h-1Ah, datos 80h-83h)."
+    LogSistema "Programa cargado: " & nombre & "."
+End Sub
+
+Private Sub Poner(ByVal dirIni As Long, ByVal bytes As Variant)
+    ' Escribe una lista de bytes en la RAM a partir de dirIni
+    Dim i As Long
+    For i = 0 To UBound(bytes)
+        RAM(dirIni + i) = bytes(i)
+    Next i
+End Sub
+
+Private Sub ProgMultiplicacion()
+    '-----------------------------------------------------------------
+    ' Multiplicacion por sumas sucesivas: RES = A x B (7 x 3 = 21 = 15h)
+    '   Dir  Bytes   Etiqueta Instruccion         Comentario
+    '   00   A1 80   INICIO   LOAD BX, [A]        BX = A (multiplicando)
+    '   02   A2 81            LOAD CX, [B]        CX = B (contador)
+    '   04   80 00            MOV AX, 0           AX = 0 (acumulador)
+    '   06   8E 00            CMP CX, 0           B = 0?
+    '   08   C1 0E            JZ FIN              si B = 0 el producto es 0
+    '   0A   21      BUCLE    ADD AX, BX          AX = AX + A
+    '   0B   B6               DEC CX              CX = CX - 1 (actualiza ZF)
+    '   0C   C2 0A            JNZ BUCLE           repetir mientras CX <> 0
+    '   0E   A4 82   FIN      STORE [RES], AX     RES = AX
+    '   10   FF               HLT
+    '   80   07      A        DB 7                multiplicando
+    '   81   03      B        DB 3                multiplicador
+    '   82   00      RES      DB 0                resultado
+    '-----------------------------------------------------------------
+    Poner &H0, Array(&HA1, &H80, &HA2, &H81, &H80, &H0, &H8E, &H0, &HC1, &HE, &H21, &HB6, &HC2, &HA, &HA4, &H82, &HFF)
+    Poner &H80, Array(&H7, &H3, &H0)
+End Sub
+
+Private Sub ProgFibonacci()
+    '-----------------------------------------------------------------
+    ' Serie de Fibonacci hasta desbordar 8 bits (CF = 1). Guarda cada termino en A0h...
+    '   Dir  Bytes   Etiqueta Instruccion         Comentario
+    '   00   80 00   INICIO   MOV AX, 0           AX = F(n-1) = 0
+    '   02   82 01            MOV CX, 1           CX = F(n) = 1
+    '   04   81 A0            MOV BX, 0xA0        BX = puntero al arreglo SERIE
+    '   06   AE      BUCLE    STORE [BX], CX      SERIE[i] = F(n)  (indirecto)
+    '   07   B1               INC BX              siguiente posicion
+    '   08   1C               MOV DX, AX          DX = F(n-1)
+    '   09   2E               ADD DX, CX          DX = F(n-1) + F(n)
+    '   0A   C3 10            JC FIN              CF = 1: ya no cabe en 8 bits
+    '   0C   12               MOV AX, CX          F(n-1) = F(n)
+    '   0D   1B               MOV CX, DX          F(n) = F(n+1)
+    '   0E   C0 06            JMP BUCLE
+    '   10   FF      FIN      HLT
+    '-----------------------------------------------------------------
+    Poner &H0, Array(&H80, &H0, &H82, &H1, &H81, &HA0, &HAE, &HB1, &H1C, &H2E, &HC3, &H10, &H12, &H1B, &HC0, &H6, &HFF)
+End Sub
+
+Private Sub ProgFactorial()
+    '-----------------------------------------------------------------
+    ' Factorial por sumas sucesivas: RES = N! (5! = 120 = 78h)
+    '   Dir  Bytes   Etiqueta Instruccion         Comentario
+    '   00   A2 80   INICIO   LOAD CX, [N]        CX = N
+    '   02   80 01            MOV AX, 1           AX = 1 (resultado parcial)
+    '   04   8E 02   EXT      CMP CX, 2
+    '   06   C3 12            JC FIN              si CX < 2 terminar
+    '   08   14               MOV BX, AX          BX = valor a sumar
+    '   09   1E               MOV DX, CX
+    '   0A   B7               DEC DX              DX = CX - 1 sumas
+    '   0B   21      INT      ADD AX, BX          AX = AX + BX
+    '   0C   B7               DEC DX
+    '   0D   C2 0B            JNZ INT             AX = AX x CX por sumas sucesivas
+    '   0F   B6               DEC CX
+    '   10   C0 04            JMP EXT
+    '   12   A4 81   FIN      STORE [RES], AX     RES = N!
+    '   14   FF               HLT
+    '   80   05      N        DB 5                N
+    '   81   00      RES      DB 0                resultado (5! = 120 = 78h)
+    '-----------------------------------------------------------------
+    Poner &H0, Array(&HA2, &H80, &H80, &H1, &H8E, &H2, &HC3, &H12, &H14, &H1E, &HB7, &H21, &HB7, &HC2, &HB, &HB6, &HC0, &H4, &HA4, &H81, &HFF)
+    Poner &H80, Array(&H5, &H0)
+End Sub
+
+Private Sub ProgCuentaRegresiva()
+    '-----------------------------------------------------------------
+    ' Cuenta regresiva desde N; guarda solo los pares en A0h... (10,8,6,4,2,0)
+    '   Dir  Bytes   Etiqueta Instruccion         Comentario
+    '   00   A2 80   INICIO   LOAD CX, [N]        CX = N
+    '   02   81 A0            MOV BX, 0xA0        BX = puntero al arreglo PARES
+    '   04   1E      BUCLE    MOV DX, CX
+    '   05   93 01            AND DX, 1           ZF = 1 si CX es par
+    '   07   C2 0B            JNZ SIGUE           impar: no se guarda
+    '   09   AE               STORE [BX], CX      guardado condicional
+    '   0A   B1               INC BX
+    '   0B   8E 00   SIGUE    CMP CX, 0
+    '   0D   C1 12            JZ FIN              llego a 0
+    '   0F   B6               DEC CX
+    '   10   C0 04            JMP BUCLE
+    '   12   FF      FIN      HLT
+    '   80   0A      N        DB 10               valor inicial
+    '-----------------------------------------------------------------
+    Poner &H0, Array(&HA2, &H80, &H81, &HA0, &H1E, &H93, &H1, &HC2, &HB, &HAE, &HB1, &H8E, &H0, &HC1, &H12, &HB6, &HC0, &H4, &HFF)
+    Poner &H80, Array(&HA)
 End Sub
 
 Private Sub EscribirRAMCompleta()
@@ -832,6 +960,30 @@ Public Sub ConfigurarSimulador()
     ' Celdas de RAM y registros como texto (para que "07" no se convierta en 7)
     ws.Range(ws.Cells(RAM_FILA, RAM_COL), ws.Cells(RAM_FILA + 15, RAM_COL + 15)).NumberFormat = "@"
     ws.Range("B2:B7").NumberFormat = "@"
+
+    ' Registros CX y DX (C5:D6)
+    ws.Range("C5").value = "CX (Contador)"
+    ws.Range("C6").value = "DX (Datos)"
+    ws.Range("C5:C6").Font.Bold = True
+    ws.Range("C5:C6").Font.Color = RGB(31, 56, 100)
+    ws.Range("D5:D6").NumberFormat = "@"
+    ws.Range("D5:D6").HorizontalAlignment = xlCenter
+    ws.Range("D5:D6").Font.Bold = True
+    ws.Range("D5").value = "00"
+    ws.Range("D6").value = "00"
+
+    ' Selector del programa demostrativo (A25:D25)
+    ws.Range("A25").value = "Programa"
+    ws.Range("A25").Font.Bold = True
+    ws.Range("B25:D25").Merge
+    ws.Range("B25").HorizontalAlignment = xlCenter
+    ws.Range("B25").Interior.Color = RGB(255, 255, 204)
+    If Trim$(CStr(ws.Range("B25").value)) = "" Then ws.Range("B25").value = "Multiplicacion"
+    On Error Resume Next                              ' la lista desplegable es opcional
+    ws.Range("B25").Validation.Delete
+    ws.Range("B25").Validation.Add Type:=xlValidateList, AlertStyle:=xlValidAlertStop, _
+        Operator:=xlBetween, Formula1:="Multiplicacion,Fibonacci,Factorial,Cuenta regresiva"
+    On Error GoTo 0
 
     ' Panel de unidad de control (A17:D24)
     With ws.Range("A17:D17")
@@ -933,4 +1085,3 @@ Private Sub CrearBotones()
         .value = "LISTA"
     End With
 End Sub
-
