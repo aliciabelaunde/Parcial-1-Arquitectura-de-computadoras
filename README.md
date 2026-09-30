@@ -578,15 +578,15 @@ Todo el código está en el módulo VBA `modSimulador` ([`src/modSimulador.bas`]
 | # | Prueba | Resultado esperado | Estado |
 |---|---|---|:---:|
 | 1 | Compilar el proyecto VBA | Sin errores | ✅ |
-| 2 | Multiplicacion: LOAD PROGRAM + 3 × STEP | FETCH completo: MAR=00, MDR=A1, IR=A1, PC=01 | ☐ |
+| 2 | Multiplicacion: LOAD PROGRAM + 3 × STEP | FETCH completo: MAR=00, MDR=A1, IR=A1, PC=01 | ✅ |
 | 3 | Multiplicacion: RUN hasta HLT | AX=15h, CX=00h, RAM[82h]=15h, ZF=1, 16 instrucciones | ✅ |
-| 4 | RUN + PAUSE + STEP | Continúa desde el pulso donde se detuvo | ☐ |
-| 5 | Editar RAM[81h]=05 y RUN | RAM[82h]=23h (7 × 5 = 35) | ☐ |
-| 6 | Editar RAM[81h]=00 y RUN | JZ tomado, RAM[82h]=00h | ☐ |
+| 4 | RUN + PAUSE + STEP | Continúa desde el pulso donde se detuvo | ✅ |
+| 5 | Editar RAM[81h]=05 y RUN | RAM[82h]=23h (7 × 5 = 35) | ✅ |
+| 6 | Editar RAM[81h]=00 y RUN | JZ tomado, RAM[82h]=00h | ✅ |
 | 7 | Fibonacci: RUN hasta HLT | A0h–ACh = 01 01 02 03 05 08 0D 15 22 37 59 90 E9, CF=1 | ✅ |
 | 8 | Factorial: RUN hasta HLT | RAM[81h]=78h (120) | ✅ |
 | 9 | Cuenta regresiva: RUN hasta HLT | A0h–A5h = 0A 08 06 04 02 00 | ✅ |
-| 10 | Escribir un opcode inválido (p. ej. `D0`) en la dirección del PC | La CPU se detiene en DECODE con "opcode invalido" | ☐ |
+| 10 | Escribir un opcode inválido (p. ej. `D0`) en la dirección del PC | La CPU se detiene en DECODE con "opcode invalido" | ✅ |
 
 ## 10. Estructura del repositorio
 
